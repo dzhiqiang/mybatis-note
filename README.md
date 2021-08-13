@@ -212,12 +212,44 @@
    }
    ```
 
-   mybatis实现模拟
+   mybatis实现模拟：要被代理是不能创建实例的
 
    ```java
    package com.dzq;
    public interface TransactionMapper {
        String getFlowKey(long id);
+   }
+   ```
+
+   ```java
+   // mybatis 代理工厂源码
+   public class MapperProxyFactory<T> {
+   
+     private final Class<T> mapperInterface;
+     private final Map<Method, MapperMethod> methodCache = new ConcurrentHashMap<Method, MapperMethod>();
+     // 构造器直接接收class:Class.forName("com.dzq.TransactionMapper") 获得
+     public MapperProxyFactory(Class<T> mapperInterface) {
+       this.mapperInterface = mapperInterface;
+     }
+   
+     public Class<T> getMapperInterface() {
+       return mapperInterface;
+     }
+   
+     public Map<Method, MapperMethod> getMethodCache() {
+       return methodCache;
+     }
+     // 创建代理
+     @SuppressWarnings("unchecked")
+     protected T newInstance(MapperProxy<T> mapperProxy) {
+       return (T) Proxy.newProxyInstance(mapperInterface.getClassLoader(), new Class[] { mapperInterface }, mapperProxy);
+     }
+     // 创建mapperProxy，有sqlSession引用，只要拿到sql就可以执行
+     public T newInstance(SqlSession sqlSession) {
+       final MapperProxy<T> mapperProxy = new MapperProxy<T>(sqlSession, mapperInterface, methodCache);
+       return newInstance(mapperProxy);
+     }
+   
    }
    ```
 
@@ -484,4 +516,128 @@ SqlSessionFactory sqlSessionFactory =
 7. ```java
    new DefaultSqlSessionFactory(config);// DefaultSqlSessionFactory属性只有一个config
    ```
+
+#### 2. 拼接sql
+
+> mybatis是要写全部sql语句的，只是变量是占位符的，所有的sql都在配置文件中，所以在解析配置文件时就已经解析完成。再看解析文件。
+
+```java
+// 解析mappers标签,原配置文件，引用了一个mapper的xml文件，再次跳转到解析xml文件
+mapperElement(root.evalNode("mappers"));
+```
+
+解析mapper.xml文件
+
+```java
+// org.apache.ibatis.builder.xml.XMLMapperBuilder
+public void parse() {
+  if (!configuration.isResourceLoaded(resource)) {
+    // 解析mapper标签，最主要看的,
+    // 直接退转到解析标签org.apache.ibatis.builder.xml.XMLStatementBuilder#parseStatementNode,解析的属性非常多但比较简单，只知道位置就可以用到在介绍
+    // 最终封装在config.mappedStatements中,key：id,value:MappedStatement具体参数可以直接看此类
+    configurationElement(parser.evalNode("/mapper"));
+    configuration.addLoadedResource(resource);
+    // 解析Mapper.java接口
+    // 最终封装在config.knownMappers中，key:type(com.dzq.TransactionMapper，Class类型)，value：MapperProxyFactory
+    bindMapperForNamespace();
+  }
+
+  parsePendingResultMaps();
+  parsePendingCacheRefs();
+  parsePendingStatements();
+}
+```
+
+#### 3. 加载数据源，获取Connection
+
+```java
+// 执行类型，来源于config,事务级别,是否自动提交
+private SqlSession openSessionFromDataSource(ExecutorType execType, TransactionIsolationLevel level, boolean autoCommit) {
+  Transaction tx = null;
+  try {
+    // 得到环境
+    final Environment environment = configuration.getEnvironment();
+    // 事务工厂
+    final TransactionFactory transactionFactory = getTransactionFactoryFromEnvironment(environment);
+    // 放入dataSource，dataSource是可以得到Connection
+    tx = transactionFactory.newTransaction(environment.getDataSource(), level, autoCommit);
+    // 执行器，里面有tx,而且是根据configuration调用，那么能够拿到其他配置
+    final Executor executor = configuration.newExecutor(tx, execType);
+    // 创建session ，配置，执行器，是否自动执行
+    // config哪里都有
+    return new DefaultSqlSession(configuration, executor, autoCommit);
+  } catch (Exception e) {
+    closeTransaction(tx); // may have fetched a connection so lets call close()
+    throw ExceptionFactory.wrapException("Error opening session.  Cause: " + e, e);
+  } finally {
+    ErrorContext.instance().reset();
+  }
+}
+```
+
+#### 4. 获取Statement
+
+> 执行的开始，在获取到SqlSession之后，就可以进行执行，SqlSession是执行的入口，先看看此接口
+
+```java
+// 查询
+<T> T selectOne(String statement);
+<E> List<E> selectList(String statement);
+// 修改
+int update(String statement);
+// 插入
+int insert(String statement);
+// 删除
+int delete(String statement);
+```
+
+先查看selectList源码，试想一下过程：根据statement得到sql语句返回值和参数，根据executor执行selectList语句，得到结果，根据返回值封装返回。
+
+关键的2个类MappedStatement，Executor
+
+```java
+// 主要属性，configuration，executor，autoCommit是构造时创建的，dirty，cursorList是执行是的中间状态
+// 配置的引用，能够拿到所有配置
+private final Configuration configuration;
+// 执行器，真实执行的类
+private final Executor executor;
+// 是否自动提交
+private final boolean autoCommit;
+// 有脏数据
+private boolean dirty;
+// 存储所有游标信息，当调用public <T> Cursor<T> selectCursor(String statement)，会把所有的返回值存储
+private List<Cursor<?>> cursorList;
+@Override
+public <E> List<E> selectList(String statement, Object parameter, RowBounds rowBounds) {
+  try {
+    // 从config中得到MappedStatement，通过config解析得来，MappedStatement是解析配置的时候赋值的
+    MappedStatement ms = configuration.getMappedStatement(statement);
+    // 执行，再看执行方法
+    return executor.query(ms, wrapCollection(parameter), rowBounds, Executor.NO_RESULT_HANDLER);
+  } catch (Exception e) {
+    throw ExceptionFactory.wrapException("Error querying database.  Cause: " + e, e);
+  } finally {
+    ErrorContext.instance().reset();
+  }
+}
+```
+
+```java
+// 查询
+public <E> List<E> query(MappedStatement ms, Object parameter, RowBounds rowBounds, ResultHandler resultHandler) throws SQLException {
+   // 根据参数拼接组装sql
+   BoundSql boundSql = ms.getBoundSql(parameter);
+   CacheKey key = createCacheKey(ms, parameter, rowBounds, boundSql);
+   return query(ms, parameter, rowBounds, resultHandler, key, boundSql);
+}
+```
+
+```java
+// Executor的查询方法
+public <E> List<E> query(MappedStatement ms, Object parameter, RowBounds rowBounds, ResultHandler resultHandler) throws SQLException {
+   BoundSql boundSql = ms.getBoundSql(parameter);
+   CacheKey key = createCacheKey(ms, parameter, rowBounds, boundSql);
+   return query(ms, parameter, rowBounds, resultHandler, key, boundSql);
+}
+```
 
