@@ -18,6 +18,7 @@ public class MybatisSessionTest {
                 new SqlSessionFactoryBuilder().build(inputStream);
         SqlSession sqlSession = sqlSessionFactory.openSession();
         String flowKey = sqlSession.selectOne("com.dzq.TransactionMapper.getFlowKey", 10);
+        String flowKey1 = sqlSession.selectOne("com.dzq.TransactionMapper.getFlowKey", 10);
         System.out.println(flowKey);
     }
 

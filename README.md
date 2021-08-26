@@ -493,7 +493,7 @@ SqlSessionFactory sqlSessionFactory =
    }
    ```
 
-   6. DataSourceFactory解析
+   6.  DataSourceFactory解析
 
       ```java
       private DataSourceFactory dataSourceElement(XNode context) throws Exception {
@@ -511,11 +511,15 @@ SqlSessionFactory sqlSessionFactory =
         }
         throw new BuilderException("Environment declaration requires a DataSourceFactory.");
       }
+      
+      
       ```
 
-7. ```java
-   new DefaultSqlSessionFactory(config);// DefaultSqlSessionFactory属性只有一个config
-   ```
+    7. 创建DefaultSqlSessionFactory
+
+       ```java
+       new DefaultSqlSessionFactory(config);// DefaultSqlSessionFactory属性只有一个config
+       ```
 
 #### 2. 拼接sql
 
@@ -532,7 +536,7 @@ mapperElement(root.evalNode("mappers"));
 // org.apache.ibatis.builder.xml.XMLMapperBuilder
 public void parse() {
   if (!configuration.isResourceLoaded(resource)) {
-    // 解析mapper标签，最主要看的,
+    // 解析mapper标签，比较关键
     // 直接退转到解析标签org.apache.ibatis.builder.xml.XMLStatementBuilder#parseStatementNode,解析的属性非常多但比较简单，只知道位置就可以用到在介绍
     // 最终封装在config.mappedStatements中,key：id,value:MappedStatement具体参数可以直接看此类
     configurationElement(parser.evalNode("/mapper"));
@@ -596,6 +600,7 @@ int delete(String statement);
 关键的2个类MappedStatement，Executor
 
 ```java
+// SqlSession类主要属性和方法
 // 主要属性，configuration，executor，autoCommit是构造时创建的，dirty，cursorList是执行是的中间状态
 // 配置的引用，能够拿到所有配置
 private final Configuration configuration;
@@ -623,9 +628,17 @@ public <E> List<E> selectList(String statement, Object parameter, RowBounds rowB
 ```
 
 ```java
-// 查询
+// Executor关键属性和方法
+// 封装执行器，自带的适配器模式
+protected Executor delegate;
+// 事务，里面有dataSource
+protected Transaction transaction;
+// 配置
+protected Configuration configuration;
+// 查询，ms:mapper属性，parameter：参数，rowBounds:分页，ResultHandler:结果处理
 public <E> List<E> query(MappedStatement ms, Object parameter, RowBounds rowBounds, ResultHandler resultHandler) throws SQLException {
-   // 根据参数拼接组装sql
+   // 根据参数拼接组装sql,简简单单的一个sql也是需要封装的，看看如何封装的
+   // BoundSql关键属性，sql：sql语句，带通配符， parameterMappings：参数，id,类型，parameterObject：参数值
    BoundSql boundSql = ms.getBoundSql(parameter);
    CacheKey key = createCacheKey(ms, parameter, rowBounds, boundSql);
    return query(ms, parameter, rowBounds, resultHandler, key, boundSql);
@@ -633,11 +646,266 @@ public <E> List<E> query(MappedStatement ms, Object parameter, RowBounds rowBoun
 ```
 
 ```java
-// Executor的查询方法
-public <E> List<E> query(MappedStatement ms, Object parameter, RowBounds rowBounds, ResultHandler resultHandler) throws SQLException {
-   BoundSql boundSql = ms.getBoundSql(parameter);
-   CacheKey key = createCacheKey(ms, parameter, rowBounds, boundSql);
-   return query(ms, parameter, rowBounds, resultHandler, key, boundSql);
+@Override
+public <E> List<E> query(MappedStatement ms, Object parameterObject, RowBounds rowBounds, ResultHandler resultHandler, CacheKey key, BoundSql boundSql)
+      throws SQLException {
+    Cache cache = ms.getCache();
+    // cache为空，直接看delegate的query方法，还是一种适配模式delegate也是一种Executor
+    if (cache != null) {
+      flushCacheIfRequired(ms);
+      if (ms.isUseCache() && resultHandler == null) {
+        ensureNoOutParams(ms, boundSql);
+        @SuppressWarnings("unchecked")
+        List<E> list = (List<E>) tcm.getObject(cache, key);
+        if (list == null) {
+          list = delegate.<E> query(ms, parameterObject, rowBounds, resultHandler, key, boundSql);
+          tcm.putObject(cache, key, list); // issue #578 and #116
+        }
+        return list;
+      }
+    }
+    // delegate真正的executor执行
+    return delegate.<E> query(ms, parameterObject, rowBounds, resultHandler, key, boundSql);
 }
 ```
 
+```java
+// SimpleExecutor
+@Override
+public <E> List<E> doQuery(MappedStatement ms, Object parameter, RowBounds rowBounds, ResultHandler resultHandler, BoundSql boundSql) throws SQLException {
+  Statement stmt = null;
+  try {
+    // 得到config
+    Configuration configuration = ms.getConfiguration();
+    // 得到statementHandler,有config创建statementHandler,同样也是适配器模式
+    StatementHandler handler = configuration.newStatementHandler(wrapper, ms, parameter, rowBounds, resultHandler, boundSql);
+    /** configuration.newStatementHandler 方法介绍 start
+    //StatementHandler statementHandler = new RoutingStatementHandler(executor, mappedStatement, parameterObject, rowBounds, resultHandler, boundSql);以下是RoutingStatementHandler关键属性和构造方法，真实调用使用delegate调用
+    //private final StatementHandler delegate;
+    //public RoutingStatementHandler(Executor executor, MappedStatement ms, Object parameter, RowBounds rowBounds, ResultHandler resultHandler, BoundSql boundSql) {
+    // switch (ms.getStatementType()) {
+    //  case STATEMENT:
+    //    delegate = new SimpleStatementHandler(executor, ms, parameter, rowBounds, resultHandler, boundSql);
+    //    break;
+    //  case PREPARED:
+    //    delegate = new PreparedStatementHandler(executor, ms, parameter, rowBounds, resultHandler, boundSql);
+    //    break;
+    //  case CALLABLE:
+    //    delegate = new CallableStatementHandler(executor, ms, parameter, rowBounds, resultHandler, boundSql);
+    //    break;
+    //  default:
+    //    throw new ExecutorException("Unknown statement type: " + ms.getStatementType());
+    // }
+
+    //}
+    configuration.newStatementHandler 方法介绍 end
+    **/
+    //生成jdbc的statement
+    stmt = prepareStatement(handler, ms.getStatementLog());
+    /**prepareStatement 内部方法
+    private Statement prepareStatement(StatementHandler handler, Log statementLog) throws SQLException {
+      Statement stmt;
+      // 生成connection
+      Connection connection = getConnection(statementLog);
+      // prepare 模板模式，下面代码介绍
+      stmt = handler.prepare(connection, transaction.getTimeout());
+      // 赋值参数，不同statement不同的效果
+      handler.parameterize(stmt);
+      return stmt;
+    }
+    **/
+    // statement 执行query
+    // statementHandler查询，处理stmt
+    return handler.<E>query(stmt, resultHandler);
+  } finally {
+    // 关闭stmt
+    closeStatement(stmt);
+  }
+}
+```
+
+org.apache.ibatis.executor.statement.BaseStatementHandler#prepare模板方法
+
+```java
+public Statement prepare(Connection connection, Integer transactionTimeout) throws SQLException {
+  ErrorContext.instance().sql(boundSql.getSql());
+  Statement statement = null;
+  try {
+    // 生成statement,核心二种：PreparedStatementHandler，SimpleStatementHandler，instantiateStatement抽象方法
+    statement = instantiateStatement(connection);
+    /**PreparedStatementHandler的instantiateStatement方法
+    protected Statement instantiateStatement(Connection connection) throws SQLException {
+      String sql = boundSql.getSql();
+      // 没有设计模式，根据不同的情况调用不同的方法生成statement.
+      if (mappedStatement.getKeyGenerator() instanceof Jdbc3KeyGenerator) {
+        String[] keyColumnNames = mappedStatement.getKeyColumns();
+        if (keyColumnNames == null) {
+          return connection.prepareStatement(sql, PreparedStatement.RETURN_GENERATED_KEYS);
+        } else {
+          return connection.prepareStatement(sql, keyColumnNames);
+        }
+      } else if (mappedStatement.getResultSetType() != null) {
+        return connection.prepareStatement(sql, mappedStatement.getResultSetType().getValue(), ResultSet.CONCUR_READ_ONLY);
+      } else {
+        return connection.prepareStatement(sql);
+      }
+    }
+    **/
+    // 设置超时时间
+    setStatementTimeout(statement, transactionTimeout);
+    // 设置每次获取个数
+    setFetchSize(statement);
+    return statement;
+  } catch (SQLException e) {
+    closeStatement(statement);
+    throw e;
+  } catch (Exception e) {
+    closeStatement(statement);
+    throw new ExecutorException("Error preparing statement.  Cause: " + e, e);
+  }
+}
+```
+
+5. ####  执行获取结果handler.<E>query(stmt, resultHandler);
+
+   ```java
+   // org.apache.ibatis.executor.statement.PreparedStatementHandler查询结果
+   public <E> List<E> query(Statement statement, ResultHandler resultHandler) throws SQLException {
+     PreparedStatement ps = (PreparedStatement) statement;
+     // 执行，下一步对结果进行处理
+     ps.execute();
+     // resultSetHandler 是PreparedStatementHandler其中一个属性
+     return resultSetHandler.<E> handleResultSets(ps);
+   }
+   ```
+
+####     6. 结果转换resultSetHandler.<E> handleResultSets(ps);
+
+> ​	ResultSetHandler类创建，是通过创建StatementHandler时创建的resultSetHandler的属性
+>
+> ```java
+> configuration.newResultSetHandler(executor, mappedStatement, rowBounds, parameterHandler, resultHandler, boundSql);
+> ```
+
+org.apache.ibatis.executor.resultset.DefaultResultSetHandler#handleResultSets
+
+```java
+@Override
+public List<Object> handleResultSets(Statement stmt) throws SQLException {
+  ErrorContext.instance().activity("handling results").object(mappedStatement.getId());
+
+  final List<Object> multipleResults = new ArrayList<Object>();
+
+  int resultSetCount = 0;
+  // 获取ResultSetWrapper
+  // ResultSetWrapper设计：首先rs还有其他一些属性，如果只是持有rs的引用，调用其他方法时，需要一些其他通过rs获取的属性就还要重复获取，那么在得到rs的时候就可以直接转换成ResultSetWrapper的属性,以下是对rs的封装
+  //public ResultSetWrapper(ResultSet rs, Configuration configuration) throws SQLException {
+  //  super();
+  //  其他属性的封装，typeHandlerRegistry,还有通过rs转换的一些属性
+  //  this.typeHandlerRegistry = configuration.getTypeHandlerRegistry();
+  //  this.resultSet = rs;
+  //  final ResultSetMetaData metaData = rs.getMetaData();
+  //  final int columnCount = metaData.getColumnCount();
+  //  for (int i = 1; i <= columnCount; i++) {
+  //    返回的列名
+  //    columnNames.add(configuration.isUseColumnLabel() ? metaData.getColumnLabel(i) : metaData.getColumnName(i));
+  //    返回的jdbc类型：比如varchar
+  //    jdbcTypes.add(JdbcType.forCode(metaData.getColumnType(i)));
+  //    返回的java类型：比如java.lang.String
+  //    classNames.add(metaData.getColumnClassName(i));
+  //  }
+  //}
+  // 拿出第一个rs
+  ResultSetWrapper rsw = getFirstResultSet(stmt);
+  // 根据配置文件记录的返回类型
+  // 配置文件对应的resultType,resultMap
+  List<ResultMap> resultMaps = mappedStatement.getResultMaps();
+  int resultMapCount = resultMaps.size();
+  validateResultMapsCount(rsw, resultMapCount);
+  while (rsw != null && resultMapCount > resultSetCount) {
+    // 取出resultMap，把对应的result的值放入到multipleResults中
+    ResultMap resultMap = resultMaps.get(resultSetCount);
+    // 放入结构到multipleResults中
+    handleResultSet(rsw, resultMap, multipleResults, null);
+    // 得到下一个结果
+    rsw = getNextResultSet(stmt);
+    cleanUpAfterHandlingResultSet();
+    resultSetCount++;
+  }
+
+  String[] resultSets = mappedStatement.getResultSets();
+  if (resultSets != null) {
+    while (rsw != null && resultSetCount < resultSets.length) {
+      ResultMapping parentMapping = nextResultMaps.get(resultSets[resultSetCount]);
+      if (parentMapping != null) {
+        String nestedResultMapId = parentMapping.getNestedResultMapId();
+        ResultMap resultMap = configuration.getResultMap(nestedResultMapId);
+        handleResultSet(rsw, resultMap, null, parentMapping);
+      }
+      rsw = getNextResultSet(stmt);
+      cleanUpAfterHandlingResultSet();
+      resultSetCount++;
+    }
+  }
+  // 返回单个结果
+  // multipleResults.size() == 1 ? (List<Object>) multipleResults.get(0) : multipleResults
+  return collapseSingleResultList(multipleResults);
+}
+```
+
+处理handleResultSet结果
+
+org.apache.ibatis.executor.resultset.DefaultResultSetHandler#handleResultSet
+
+```java
+private void handleResultSet(ResultSetWrapper rsw, ResultMap resultMap, List<Object> multipleResults, ResultMapping parentMapping) throws SQLException {
+  try {
+    if (parentMapping != null) {
+      handleRowValues(rsw, resultMap, null, RowBounds.DEFAULT, parentMapping);
+    } else {
+      if (resultHandler == null) {// 默认为空
+        // 得到默认的接口处理器
+        DefaultResultHandler defaultResultHandler = new DefaultResultHandler(objectFactory);
+        // 处理结果
+        handleRowValues(rsw, resultMap, defaultResultHandler, rowBounds, null);
+        /**
+        调用方法：handleRowValuesForSimpleResultMap(rsw, resultMap, resultHandler, rowBounds, parentMapping);
+        private void handleRowValuesForSimpleResultMap(ResultSetWrapper rsw, ResultMap resultMap, ResultHandler<?>                         resultHandler, RowBounds rowBounds, ResultMapping parentMapping) throws SQLException {
+          DefaultResultContext<Object> resultContext = new DefaultResultContext<Object>();
+          // skip条数
+          skipRows(rsw.getResultSet(), rowBounds);
+          // 判断是否停止和不能超过配置的条数
+          while (shouldProcessMoreRows(resultContext, rowBounds) && rsw.getResultSet().next()) {
+            // 因为resultMap.getDiscriminator()为空，则直接返回resultMap自己
+            ResultMap discriminatedResultMap = resolveDiscriminatedResultMap(rsw.getResultSet(), resultMap, null);
+              // 解析数据库的值
+              Object rowValue = getRowValue(rsw, discriminatedResultMap);
+                // getRowValue内方法
+                Object rowValue = createResultObject(rsw, resultMap, lazyLoader, null);
+                  // createResultObject内方法
+                  Object resultObject = createResultObject(rsw, resultMap, constructorArgTypes, constructorArgs, columnPrefix);
+                    // 创建原始类型的结果
+                    return createPrimitiveResultObject(rsw, resultMap, columnPrefix)
+                      // 根据resultType得到类型处理类，从rsw中得到，可以进行一个缓存
+                      final TypeHandler<?> typeHandler = rsw.getTypeHandler(resultType, columnName);
+                      // 对应的类型处理
+                      return typeHandler.getResult(rsw.getResultSet(), columnName);
+              // 把字段值放入到resultContext中，同时也放入到resultHandler中
+              storeObject(resultHandler, resultContext, rowValue, parentMapping, rsw.getResultSet());
+          }
+        }
+        **/
+        // 取出结果放入到multipleResults结果集中
+        multipleResults.add(defaultResultHandler.getResultList());
+      } else {
+        handleRowValues(rsw, resultMap, resultHandler, rowBounds, null);
+      }
+    }
+  } finally {
+    // issue #228 (close resultsets)
+    closeResultSet(rsw.getResultSet());
+  }
+}
+```
+
+![序列图](https://raw.githubusercontent.com/dzhiqiang/PicGo-gallery/main/%E6%89%A7%E8%A1%8Csql%E8%BF%87%E7%A8%8B-%E5%BA%8F%E5%88%97.png)
