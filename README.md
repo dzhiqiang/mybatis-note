@@ -870,7 +870,7 @@ private void handleResultSet(ResultSetWrapper rsw, ResultMap resultMap, List<Obj
         handleRowValues(rsw, resultMap, defaultResultHandler, rowBounds, null);
         /**
         调用方法：handleRowValuesForSimpleResultMap(rsw, resultMap, resultHandler, rowBounds, parentMapping);
-        private void handleRowValuesForSimpleResultMap(ResultSetWrapper rsw, ResultMap resultMap, ResultHandler<?>                         resultHandler, RowBounds rowBounds, ResultMapping parentMapping) throws SQLException {
+        private void handleRowValuesForSimpleResultMap(ResultSetWrapper rsw, ResultMap resultMap, ResultHandler<?>           resultHandler, RowBounds rowBounds, ResultMapping parentMapping) throws SQLException {
           DefaultResultContext<Object> resultContext = new DefaultResultContext<Object>();
           // skip条数
           skipRows(rsw.getResultSet(), rowBounds);
@@ -909,3 +909,4 @@ private void handleResultSet(ResultSetWrapper rsw, ResultMap resultMap, List<Obj
 ```
 
 ![序列图](https://raw.githubusercontent.com/dzhiqiang/PicGo-gallery/main/%E6%89%A7%E8%A1%8Csql%E8%BF%87%E7%A8%8B-%E5%BA%8F%E5%88%97.png)
+
