@@ -6,4 +6,9 @@
     <select id="getFlowKey" resultType="string">
         select flow_key from transaction where id = #{id}
     </select>
+
+    <insert id="insert" parameterType="com.dzq.entity.Transaction">
+        insert into transaction(tenant_id,flow_key,node_key,deploy_version)values
+        (#{tenantId},#{flowKey},#{nodeKey},#{deployVersion})
+    </insert>
 </mapper>

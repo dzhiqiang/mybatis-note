@@ -910,3 +910,367 @@ private void handleResultSet(ResultSetWrapper rsw, ResultMap resultMap, List<Obj
 
 ![序列图](https://raw.githubusercontent.com/dzhiqiang/PicGo-gallery/main/%E6%89%A7%E8%A1%8Csql%E8%BF%87%E7%A8%8B-%E5%BA%8F%E5%88%97.png)
 
+#### 7. 关闭
+
+Statement关闭：可以看到生成是从Executor生成的，statement的处理都在其他类中处理，所以也在此类中关闭
+
+```java
+// SimpleExecutor
+@Override
+public <E> List<E> doQuery(MappedStatement ms, Object parameter, RowBounds rowBounds, ResultHandler resultHandler, BoundSql boundSql) throws SQLException {
+  // 生成
+  Statement stmt = null;
+  try {
+    Configuration configuration = ms.getConfiguration();
+    StatementHandler handler = configuration.newStatementHandler(wrapper, ms, parameter, rowBounds, resultHandler, boundSql);
+    stmt = prepareStatement(handler, ms.getStatementLog());
+    return handler.<E>query(stmt, resultHandler);
+  } finally {
+    // 关闭
+    closeStatement(stmt);
+  }
+}
+```
+
+ResultSet关闭：ResultSet是从org.apache.ibatis.executor.resultset.DefaultResultSetHandler#handleResultSets得到封装到ResultSetWrapper，取值是在handleResultSet，然后就取下一个ResultSet了，则在handleResultSet中close
+
+```java
+// 已经封装到ResultSetWrapper中
+private void handleResultSet(ResultSetWrapper rsw, ResultMap resultMap, List<Object> multipleResults, ResultMapping parentMapping) throws SQLException {
+  try {
+    if (parentMapping != null) {
+      handleRowValues(rsw, resultMap, null, RowBounds.DEFAULT, parentMapping);
+    } else {
+      if (resultHandler == null) {
+        DefaultResultHandler defaultResultHandler = new DefaultResultHandler(objectFactory);
+        handleRowValues(rsw, resultMap, defaultResultHandler, rowBounds, null);
+        multipleResults.add(defaultResultHandler.getResultList());
+      } else {
+        handleRowValues(rsw, resultMap, resultHandler, rowBounds, null);
+      }
+    }
+  } finally {
+    // 取值完后关闭
+    closeResultSet(rsw.getResultSet());
+  }
+}
+```
+
+Connection关闭：是在创建SqlSession时，再创建executor时提前创建Transaction，所以间接由SqlSession保管，由SqlSession关闭。
+
+Statement和ResultSet是每次执行的时候产生的，每次都需要关闭，Connection是链接，所以不在使用的时候可以关闭。
+
+#### 8. 异常处理
+
+> 加载文件：需要处理异常IOException:IO异常是mybatis的提前准备的异常，还没真正到链接数据库的操作。文件异常处理不了。需要在编写时考虑。
+>
+> 开始执行：不需要处理异常，直接进行执行，执行时查错。重点分析。JDBC操作关键异常SQLException,是需要捕获的异常，如何处理的？
+>
+> 开始执行时有2不进程，1：前期准备工作，mybatis自定义异常，2：涉及到JDBC，SQLException
+
+前期准备的异常都是RuntimeException，不需要捕获，出错时处理，比如
+
+```java
+@Override
+public <T> T selectOne(String statement, Object parameter) {
+  // Popular vote was to return null on 0 results and throw exception on too many.
+  List<T> list = this.<T>selectList(statement, parameter);
+  if (list.size() == 1) {
+    return list.get(0);
+  } else if (list.size() > 1) {
+    // 查询数据过多时的异常处理
+    throw new TooManyResultsException("Expected one result (or null) to be returned by selectOne(), but found: " + list.size());
+  } else {
+    return null;
+  }
+}
+```
+
+涉及到JDBC的异常全部没有处理，而是在最外层捕获了异常
+
+```java
+// 开始涉及到jdbc的异常，全部抛出
+@Override
+ public <E> List<E> query(MappedStatement ms, Object parameter, RowBounds rowBounds, ResultHandler resultHandler) throws SQLException {
+   BoundSql boundSql = ms.getBoundSql(parameter);
+   CacheKey key = createCacheKey(ms, parameter, rowBounds, boundSql);
+   return query(ms, parameter, rowBounds, resultHandler, key, boundSql);
+}
+```
+
+```java
+@Override
+public <E> List<E> selectList(String statement, Object parameter, RowBounds rowBounds) {
+  try {
+    MappedStatement ms = configuration.getMappedStatement(statement);
+    // 调用上方代码
+    return executor.query(ms, wrapCollection(parameter), rowBounds, Executor.NO_RESULT_HANDLER);
+  } catch (Exception e) {
+    // 捕获所有异常，进行封装,返回自定义异常
+    /**
+    public static RuntimeException wrapException(String message, Exception e) {
+    	return new PersistenceException(ErrorContext.instance().message(message).cause(e).toString(), e);
+    }
+    **/
+    throw ExceptionFactory.wrapException("Error querying database.  Cause: " + e, e);
+  } finally {
+    ErrorContext.instance().reset();
+  }
+}
+```
+
+对于空指针的校验，尽量封装到方法中，比如上面代码
+
+MappedStatement ms = configuration.getMappedStatement(statement); // 是从配置中拿到MappedStatement没有校验为空，如果为空则NullPointerException,那校验在什么地方呢？查看configuration.getMappedStatement(statement);
+
+想到另外一个问题**数据结构的一定要合理**
+
+调用代码
+
+```java
+configuration.getMappedStatement(statement);
+////进入
+this.getMappedStatement(id, true);
+////进入
+//从configuration属性mappedStatements拿到值，还没校验异常
+//protected final Map<String, MappedStatement> mappedStatements = new StrictMap<MappedStatement>("Mapped Statements collection");
+return mappedStatements.get(id);
+//StrictMap类获取，重写了get方法，在最底层抛出异常，而不是在业务层
+public V get(Object key) {
+   V value = super.get(key);
+   if (value == null) {
+      // 如果为空抛出异常，而且异常信息提示也很精准。name是StrictMap属性，为map命名。
+      throw new IllegalArgumentException(name + " does not contain value for " + key);
+   }
+   if (value instanceof Ambiguity) {
+      throw new IllegalArgumentException(((Ambiguity) value).getSubject() + " is ambiguous in " + name
+            + " (try using the full name including the namespace, or rename one of the entries)");
+   }
+   return value;
+}
+```
+
+自己写的例子
+
+```java
+public class Student {
+    private String name;
+    // 学生有多地址
+    private List<Address> addressList;
+    public List<Address> getAddressList() {
+        if (addressList == null || addressList.size() == 0) {
+            throw new RuntimeException(name + " 没有家庭地址");
+        }
+        return addressList;
+    }
+    public static void main(String[] args) {
+        Student student = new Student();
+        // 不影响业务代码美观
+        List<Address> addressList = student.getAddressList();
+        //TODO
+    }
+}
+```
+
+### Mapper.class接口调用解读
+
+```java
+public static void select() throws IOException {
+    String resource = "mybatis-config.xml";
+    InputStream inputStream = Resources.getResourceAsStream(resource);
+    SqlSessionFactory sqlSessionFactory =
+            new SqlSessionFactoryBuilder().build(inputStream);
+    SqlSession sqlSession = sqlSessionFactory.openSession();
+    // 根据类型得到接口，接口直接调用
+    TransactionMapper transactionMapper = sqlSession.getMapper(TransactionMapper.class);
+    // 代理类调用，得到返回值与sqlSession对比
+    // String flowKey = sqlSession.selectOne("com.dzq.TransactionMapper.getFlowKey", 10);
+    // SqlSession调用知道namespace和参数，那么接口调用如何知道呢，通过动态代理的object和method方法拼接，在根据方法对应的标签找到是insert还是update
+    // 然后再得到参数
+    String flowKey = transactionMapper.getFlowKey(10);
+    System.out.println(flowKey);
+}
+```
+
+上面已经讲到InvoceHandler接口的方法，那什么时候加入到配置中的呢
+
+org.apache.ibatis.builder.xml.XMLMapperBuilder#parse
+
+```java
+public void parse() {
+  if (!configuration.isResourceLoaded(resource)) {
+    // 解析mapper文件
+    configurationElement(parser.evalNode("/mapper"));
+    configuration.addLoadedResource(resource);
+    // 找到对应的namespace的接口进行解析
+    bindMapperForNamespace();
+  }
+
+  parsePendingResultMaps();
+  parsePendingCacheRefs();
+  parsePendingStatements();
+}
+```
+
+```java
+private void bindMapperForNamespace() {
+  // 得到namespace
+  String namespace = builderAssistant.getCurrentNamespace();
+  if (namespace != null) {
+    Class<?> boundType = null;
+    try {
+      // 转换到class类
+      boundType = Resources.classForName(namespace);
+    } catch (ClassNotFoundException e) {
+      //ignore, bound type is not required
+    }
+    if (boundType != null) {
+      if (!configuration.hasMapper(boundType)) {
+        // Spring may not know the real resource name so we set a flag
+        // to prevent loading again this resource from the mapper interface
+        // look at MapperAnnotationBuilder#loadXmlResource
+        configuration.addLoadedResource("namespace:" + namespace);
+        // 加入到config
+        configuration.addMapper(boundType);
+      }
+    }
+  }
+}
+```
+
+```java
+public <T> void addMapper(Class<T> type) {
+  // 校验工作
+  if (type.isInterface()) {
+    if (hasMapper(type)) {
+      throw new BindingException("Type " + type + " is already known to the MapperRegistry.");
+    }
+    boolean loadCompleted = false;
+    try {
+      // 放入到mappers,new MapperProxyFactory<T>(type)创建动态代理工厂，如上面复习的一样
+      knownMappers.put(type, new MapperProxyFactory<T>(type));
+      MapperAnnotationBuilder parser = new MapperAnnotationBuilder(config, type);
+      parser.parse();
+      loadCompleted = true;
+    } finally {
+      if (!loadCompleted) {
+        knownMappers.remove(type);
+      }
+    }
+  }
+}
+```
+
+下面讲如何获取
+
+```java
+TransactionMapper transactionMapper = sqlSession.getMapper(TransactionMapper.class);
+```
+
+```java
+public <T> T getMapper(Class<T> type, SqlSession sqlSession) {
+  // 得到对应的动态代理工厂
+  final MapperProxyFactory<T> mapperProxyFactory = (MapperProxyFactory<T>) knownMappers.get(type);
+  if (mapperProxyFactory == null) {
+    throw new BindingException("Type " + type + " is not known to the MapperRegistry.");
+  }
+  try {
+    // 创建代理，如最开始的复习，执行主要看MapperProxy的invoke方法
+    return mapperProxyFactory.newInstance(sqlSession);
+  } catch (Exception e) {
+    throw new BindingException("Error getting mapper instance. Cause: " + e, e);
+  }
+}
+```
+
+```java
+@Override
+public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+  // 调用了Object方法和接口的默认方法，不是重点
+  try {
+    if (Object.class.equals(method.getDeclaringClass())) {
+      return method.invoke(this, args);
+    } else if (isDefaultMethod(method)) {
+      return invokeDefaultMethod(proxy, method, args);
+    }
+  } catch (Throwable t) {
+    throw ExceptionUtil.unwrapThrowable(t);
+  }
+  // 根据方法生成MapperMethod方法，后面比较简单，就是创建MapperMethod
+  final MapperMethod mapperMethod = cachedMapperMethod(method);
+  return mapperMethod.execute(sqlSession, args);
+}
+```
+
+```java
+mapperMethod = new MapperMethod(mapperInterface, method, sqlSession.getConfiguration());
+```
+
+MapperMethod关键属性和方法
+
+```
+// command：sql命令，记录着命令类型：insert，update等，还有namespace
+// method：记录返回值，参数等
+private final SqlCommand command;
+private final MethodSignature method;
+```
+
+```java
+// 执行，在创建之后就执行了
+public Object execute(SqlSession sqlSession, Object[] args) {
+  Object result;
+  // 根据不同的类型调用不同的sqlSession方法
+  switch (command.getType()) {
+    case INSERT: {
+    //根据method组装参数，因为sqlSession只有一个参数
+    //command.getName()=namespace
+    Object param = method.convertArgsToSqlCommandParam(args);
+      // rowCountResult 根据sqlSession执行的结果转换返回值，返回值类型在method记录
+      result = rowCountResult(sqlSession.insert(command.getName(), param));
+      break;
+    }
+    case UPDATE: {
+      Object param = method.convertArgsToSqlCommandParam(args);
+      result = rowCountResult(sqlSession.update(command.getName(), param));
+      break;
+    }
+    case DELETE: {
+      Object param = method.convertArgsToSqlCommandParam(args);
+      result = rowCountResult(sqlSession.delete(command.getName(), param));
+      break;
+    }
+    case SELECT:
+      if (method.returnsVoid() && method.hasResultHandler()) {
+        executeWithResultHandler(sqlSession, args);
+        result = null;
+      } else if (method.returnsMany()) {
+        result = executeForMany(sqlSession, args);
+      } else if (method.returnsMap()) {
+        result = executeForMap(sqlSession, args);
+      } else if (method.returnsCursor()) {
+        result = executeForCursor(sqlSession, args);
+      } else {
+        Object param = method.convertArgsToSqlCommandParam(args);
+        result = sqlSession.selectOne(command.getName(), param);
+      }
+      break;
+    case FLUSH:
+      result = sqlSession.flushStatements();
+      break;
+    default:
+      throw new BindingException("Unknown execution method for: " + command.getName());
+  }
+  if (result == null && method.getReturnType().isPrimitive() && !method.returnsVoid()) {
+    throw new BindingException("Mapper method '" + command.getName() 
+        + " attempted to return null from a method with a primitive return type (" + method.getReturnType() + ").");
+  }
+  return result;
+}
+```
+
+### 与Spring结合
+
+> 为了能够结合Spring，mybatis特意扩展开发mybatis-spring.
+
+##### spring复习
+
