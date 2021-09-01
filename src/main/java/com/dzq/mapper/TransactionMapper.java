@@ -1,4 +1,4 @@
-package com.dzq;
+package com.dzq.mapper;
 
 import com.dzq.entity.Transaction;
 

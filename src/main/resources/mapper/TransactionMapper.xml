@@ -2,7 +2,7 @@
 <!DOCTYPE mapper
         PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<mapper namespace="com.dzq.TransactionMapper">
+<mapper namespace="com.dzq.mapper.TransactionMapper">
     <select id="getFlowKey" resultType="string">
         select flow_key from transaction where id = #{id}
     </select>

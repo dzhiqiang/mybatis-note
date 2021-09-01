@@ -8,7 +8,7 @@ public class Student {
     private List<Address> addressList;
     public List<Address> getAddressList() {
         if (addressList == null || addressList.size() == 0) {
-            throw new RuntimeException(name + " 没有家庭地址");
+            throw new RuntimeException(name + " 没有填写家庭地址");
         }
         return addressList;
     }

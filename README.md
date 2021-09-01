@@ -227,7 +227,7 @@
    
      private final Class<T> mapperInterface;
      private final Map<Method, MapperMethod> methodCache = new ConcurrentHashMap<Method, MapperMethod>();
-     // 构造器直接接收class:Class.forName("com.dzq.TransactionMapper") 获得
+     // 构造器直接接收class:Class.forName("com.dzq.mapper.TransactionMapper") 获得
      public MapperProxyFactory(Class<T> mapperInterface) {
        this.mapperInterface = mapperInterface;
      }
@@ -254,7 +254,7 @@
    ```
 
    ```xml
-   <mapper namespace="com.dzq.TransactionMapper">
+   <mapper namespace="com.dzq.mapper.TransactionMapper">
        <select id="getFlowKey" resultType="string">
            select flow_key from transaction where id = #{id}
        </select>
@@ -265,7 +265,7 @@
    // namespace,id的获取
    Class<?>[] classes = proxy.getClass().getInterfaces();
    for (int i = 0; i < classes.length; i++) {
-       // com.dzq.TransactionMapper
+       // com.dzq.mapper.TransactionMapper
        System.out.println(classes[i].getName());
    }
    // getFlowKey也可以拿到返回值，然后根据sql的执行结果，转换此方法的返回值
@@ -303,7 +303,7 @@ public static void main(String[] args) throws IOException {
     // 获取session
     SqlSession sqlSession = sqlSessionFactory.openSession();
     // 根据state找到sql语句并传入参数执行
-    String flowKey = sqlSession.selectOne("com.dzq.TransactionMapper.getFlowKey", 10);
+    String flowKey = sqlSession.selectOne("com.dzq.mapper.TransactionMapper.getFlowKey", 10);
     System.out.println(flowKey);
 }
 ```
@@ -352,10 +352,11 @@ public static void main(String[] args) throws IOException {
 ```
 
 ```xml
-<mapper namespace="com.dzq.TransactionMapper">
-    <select id="getFlowKey" resultType="string">
-        select flow_key from transaction where id = #{id}
-    </select>
+
+<mapper namespace="com.dzq.mapper.TransactionMapper">
+   <select id="getFlowKey" resultType="string">
+      select flow_key from transaction where id = #{id}
+   </select>
 </mapper>
 ```
 
@@ -542,7 +543,7 @@ public void parse() {
     configurationElement(parser.evalNode("/mapper"));
     configuration.addLoadedResource(resource);
     // 解析Mapper.java接口
-    // 最终封装在config.knownMappers中，key:type(com.dzq.TransactionMapper，Class类型)，value：MapperProxyFactory
+    // 最终封装在config.knownMappers中，key:type(com.dzq.mapper.TransactionMapper，Class类型)，value：MapperProxyFactory
     bindMapperForNamespace();
   }
 
@@ -964,9 +965,9 @@ Statement和ResultSet是每次执行的时候产生的，每次都需要关闭�
 
 > 加载文件：需要处理异常IOException:IO异常是mybatis的提前准备的异常，还没真正到链接数据库的操作。文件异常处理不了。需要在编写时考虑。
 >
-> 开始执行：不需要处理异常，直接进行执行，执行时查错。重点分析。JDBC操作关键异常SQLException,是需要捕获的异常，如何处理的？
+> 开始执行：不需要处理异常，直接进行执行，执行时查错。需重点分析。JDBC操作关键异常SQLException,是需要捕获的异常，如何处理的？
 >
-> 开始执行时有2不进程，1：前期准备工作，mybatis自定义异常，2：涉及到JDBC，SQLException
+> 开始执行时有2步进程，1：前期准备工作，mybatis自定义异常，2：涉及到JDBC，SQLException
 
 前期准备的异常都是RuntimeException，不需要捕获，出错时处理，比如
 
@@ -1059,7 +1060,7 @@ public class Student {
     private List<Address> addressList;
     public List<Address> getAddressList() {
         if (addressList == null || addressList.size() == 0) {
-            throw new RuntimeException(name + " 没有家庭地址");
+            throw new RuntimeException(name + " 没有填写家庭地址");
         }
         return addressList;
     }
@@ -1084,7 +1085,7 @@ public static void select() throws IOException {
     // 根据类型得到接口，接口直接调用
     TransactionMapper transactionMapper = sqlSession.getMapper(TransactionMapper.class);
     // 代理类调用，得到返回值与sqlSession对比
-    // String flowKey = sqlSession.selectOne("com.dzq.TransactionMapper.getFlowKey", 10);
+    // String flowKey = sqlSession.selectOne("com.dzq.mapper.TransactionMapper.getFlowKey", 10);
     // SqlSession调用知道namespace和参数，那么接口调用如何知道呢，通过动态代理的object和method方法拼接，在根据方法对应的标签找到是insert还是update
     // 然后再得到参数
     String flowKey = transactionMapper.getFlowKey(10);
@@ -1271,6 +1272,228 @@ public Object execute(SqlSession sqlSession, Object[] args) {
 ### 与Spring结合
 
 > 为了能够结合Spring，mybatis特意扩展开发mybatis-spring.
+>
+> mybatis能够实现SqlSession获取到Mapper类，那么就看看如何注入到springbean中。
 
 ##### spring复习
 
+1. spring bean存在的2种形式：普通的bean和工厂bean
+
+**普通的bean**:直接获取对应类的示例，比如以下，dataSource直接获取DriverManagerDataSource属性
+
+```xml
+<bean id="dataSource" class="org.springframework.jdbc.datasource.DriverManagerDataSource">
+    <property name="driverClassName" value="com.mysql.jdbc.Driver"></property>
+    <property name="url" value="jdbc:mysql://10.9.224.45:3306/activiti?useUnicode=true&amp;characterEncoding=utf8&amp;serverTimezone=UTC&amp;useSSL=false"></property>
+    <property name="username" value="root"></property>
+    <property name="password" value="root"></property>
+</bean>
+```
+
+**工厂bean**：获取对应bean的工厂，通过getObject()获取，比如以下，sqlSessionFactory获取SqlSessionFactoryBean通过getObject()获得。
+
+```xml
+<bean id="sqlSessionFactory" class="org.mybatis.spring.SqlSessionFactoryBean">
+    <property name="dataSource" ref="dataSource" />
+    <property name="mapperLocations" value="classpath:mapper/TransactionMapper.xml" />
+</bean>
+```
+
+为什么需要FactoryBean，有一些配置不仅仅是一个属性那么简单，需要大量的解析操作（代码量），通过上面的源码知道SqlSessionFactory是持有Config的，config是通过解析文件来获得的。那么什么时候解析呢？通常和InitializingBean配合，实现afterPropertiesSet，当属性赋值完成后，可以根据属性值完成解析工作。解析完成后创建SqlSessionFactory，然后通过FactoryBean接口就可以获取了。
+
+```java
+// 属性赋值完成后，通过属性进行下一步操作
+@Override
+public void afterPropertiesSet() throws Exception {
+  notNull(dataSource, "Property 'dataSource' is required");
+  notNull(sqlSessionFactoryBuilder, "Property 'sqlSessionFactoryBuilder' is required");
+  state((configuration == null && configLocation == null) || !(configuration != null && configLocation != null),
+      "Property 'configuration' and 'configLocation' can not specified with together");
+  // 构建sqlSessionFactory，buildSqlSessionFactory不在介绍
+  this.sqlSessionFactory = buildSqlSessionFactory();
+}
+```
+
+```java
+// 通过上面的构建，这里就直接获取了
+@Override
+public SqlSessionFactory getObject() throws Exception {
+  if (this.sqlSessionFactory == null) {
+    afterPropertiesSet();
+  }
+
+  return this.sqlSessionFactory;
+}
+```
+
+2.  spring对BeanDefinition处理扩展，继承BeanDefinitionRegistryPostProcessor，实现postProcessBeanDefinitionRegistry
+
+> BeanDefinition是对bean注解的解析，还没有生成bean对象，可以通过postProcessBeanDefinitionRegistry进行处理，获取进行其他处理逻辑，相当于spring的一个监听器，做一些额外的事情。比如：org.mybatis.spring.mapper.MapperScannerConfigurer，其实并不是为了使用这个类对象，只是为了把对应的Mapper接口注册到spring。任何类都可以，只要符合业务逻辑的类名即可。
+
+> 回忆下mybatis，Mapper代理是可以通过SqlSeesion对象通过类获取到的，那么把这个对象注入到bean就可以了，bean的2种形式已经介绍过了，mybatis是通过工厂bean的方式注入的，MapperFactoryBean，那看看源码是如何通过postProcessBeanDefinitionRegistry注入的吧？
+
+```java
+@Override
+public void postProcessBeanDefinitionRegistry(BeanDefinitionRegistry registry) {
+  if (this.processPropertyPlaceHolders) {
+    processPropertyPlaceHolders();
+  }
+  // 通过ClassPathMapperScanner扫描包
+  ClassPathMapperScanner scanner = new ClassPathMapperScanner(registry);
+  scanner.setAddToConfig(this.addToConfig);
+  scanner.setAnnotationClass(this.annotationClass);
+  scanner.setMarkerInterface(this.markerInterface);
+  scanner.setSqlSessionFactory(this.sqlSessionFactory);
+  scanner.setSqlSessionTemplate(this.sqlSessionTemplate);
+  scanner.setSqlSessionFactoryBeanName(this.sqlSessionFactoryBeanName);
+  scanner.setSqlSessionTemplateBeanName(this.sqlSessionTemplateBeanName);
+  scanner.setResourceLoader(this.applicationContext);
+  scanner.setBeanNameGenerator(this.nameGenerator);
+  // 赋值MapperFactoryBeanClass类
+  //public void setMapperFactoryBeanClass(Class<? extends MapperFactoryBean> mapperFactoryBeanClass) {
+  //  赋值的时候为空，默认值MapperFactoryBean
+  //  this.mapperFactoryBeanClass = mapperFactoryBeanClass == null ? MapperFactoryBean.class : mapperFactoryBeanClass;
+  //}
+  scanner.setMapperFactoryBeanClass(this.mapperFactoryBeanClass);
+  if (StringUtils.hasText(lazyInitialization)) {
+    scanner.setLazyInitialization(Boolean.valueOf(lazyInitialization));
+  }
+  if (StringUtils.hasText(defaultScope)) {
+    scanner.setDefaultScope(defaultScope);
+  }
+  scanner.registerFilters();
+  // 开始解析，那么就看看生成什么样子的BeanDefinition
+  scanner.scan(
+      StringUtils.tokenizeToStringArray(this.basePackage, ConfigurableApplicationContext.CONFIG_LOCATION_DELIMITERS));
+}
+```
+
+开始解析
+
+```java
+// 开始解析
+public int scan(String... basePackages) {
+   int beanCountAtScanStart = this.registry.getBeanDefinitionCount();
+   // ClassPathMapperScanner重新了这个方法，一定要看重写的方法
+   doScan(basePackages);
+
+   // Register annotation config processors, if necessary.
+   if (this.includeAnnotationConfig) {
+      AnnotationConfigUtils.registerAnnotationConfigProcessors(this.registry);
+   }
+
+   return (this.registry.getBeanDefinitionCount() - beanCountAtScanStart);
+}
+```
+
+子类重写的方法
+
+```java
+@Override
+public Set<BeanDefinitionHolder> doScan(String... basePackages) {
+  // 还是调用父类获取到解析的beanDefinitions
+  Set<BeanDefinitionHolder> beanDefinitions = super.doScan(basePackages);
+
+  if (beanDefinitions.isEmpty()) {
+    LOGGER.warn(() -> "No MyBatis mapper was found in '" + Arrays.toString(basePackages)
+        + "' package. Please check your configuration.");
+  } else {
+    // 开始操作BeanDefinition
+    processBeanDefinitions(beanDefinitions);
+  }
+
+  return beanDefinitions;
+}
+```
+
+对BeanDefinition进行二次加工
+
+```java
+private void processBeanDefinitions(Set<BeanDefinitionHolder> beanDefinitions) {
+  AbstractBeanDefinition definition;
+  BeanDefinitionRegistry registry = getRegistry();
+  for (BeanDefinitionHolder holder : beanDefinitions) {
+    definition = (AbstractBeanDefinition) holder.getBeanDefinition();
+    boolean scopedProxy = false;
+    if (ScopedProxyFactoryBean.class.getName().equals(definition.getBeanClassName())) {
+      definition = (AbstractBeanDefinition) Optional
+          .ofNullable(((RootBeanDefinition) definition).getDecoratedDefinition())
+          .map(BeanDefinitionHolder::getBeanDefinition).orElseThrow(() -> new IllegalStateException(
+              "The target bean definition of scoped proxy bean not found. Root bean definition[" + holder + "]"));
+      scopedProxy = true;
+    }
+    String beanClassName = definition.getBeanClassName();
+    LOGGER.debug(() -> "Creating MapperFactoryBean with name '" + holder.getBeanName() + "' and '" + beanClassName
+        + "' mapperInterface");
+
+    // MapperFactoryBean构造函数唯一的参数就是Mapper本身
+    definition.getConstructorArgumentValues().addGenericArgumentValue(beanClassName);
+    // BeanClass替换成mapperFactoryBeanClass：MapperFactoryBean,
+    definition.setBeanClass(this.mapperFactoryBeanClass);
+
+    definition.getPropertyValues().add("addToConfig", this.addToConfig);
+
+    // Attribute for MockitoPostProcessor
+    // https://github.com/mybatis/spring-boot-starter/issues/475
+    definition.setAttribute(FACTORY_BEAN_OBJECT_TYPE, beanClassName);
+
+    boolean explicitFactoryUsed = false;
+    if (StringUtils.hasText(this.sqlSessionFactoryBeanName)) {
+      definition.getPropertyValues().add("sqlSessionFactory",
+          new RuntimeBeanReference(this.sqlSessionFactoryBeanName));
+      explicitFactoryUsed = true;
+    } else if (this.sqlSessionFactory != null) {
+      definition.getPropertyValues().add("sqlSessionFactory", this.sqlSessionFactory);
+      explicitFactoryUsed = true;
+    }
+
+    if (StringUtils.hasText(this.sqlSessionTemplateBeanName)) {
+      if (explicitFactoryUsed) {
+        LOGGER.warn(
+            () -> "Cannot use both: sqlSessionTemplate and sqlSessionFactory together. sqlSessionFactory is ignored.");
+      }
+      definition.getPropertyValues().add("sqlSessionTemplate",
+          new RuntimeBeanReference(this.sqlSessionTemplateBeanName));
+      explicitFactoryUsed = true;
+    } else if (this.sqlSessionTemplate != null) {
+      if (explicitFactoryUsed) {
+        LOGGER.warn(
+            () -> "Cannot use both: sqlSessionTemplate and sqlSessionFactory together. sqlSessionFactory is ignored.");
+      }
+      definition.getPropertyValues().add("sqlSessionTemplate", this.sqlSessionTemplate);
+      explicitFactoryUsed = true;
+    }
+	// 通过byType方式赋值属性
+    // public void setSqlSessionFactory(SqlSessionFactory sqlSessionFactory) {
+    //   if (this.sqlSessionTemplate == null || sqlSessionFactory != this.sqlSessionTemplate.getSqlSessionFactory()) {
+    //     this.sqlSessionTemplate = createSqlSessionTemplate(sqlSessionFactory);
+    //   }
+    // }
+    if (!explicitFactoryUsed) {
+      LOGGER.debug(() -> "Enabling autowire by type for MapperFactoryBean with name '" + holder.getBeanName() + "'.");
+      definition.setAutowireMode(AbstractBeanDefinition.AUTOWIRE_BY_TYPE);
+    }
+
+    definition.setLazyInit(lazyInitialization);
+
+    if (scopedProxy) {
+      continue;
+    }
+
+    if (ConfigurableBeanFactory.SCOPE_SINGLETON.equals(definition.getScope()) && defaultScope != null) {
+      definition.setScope(defaultScope);
+    }
+
+    if (!definition.isSingleton()) {
+      BeanDefinitionHolder proxyHolder = ScopedProxyUtils.createScopedProxy(holder, registry, true);
+      if (registry.containsBeanDefinition(proxyHolder.getBeanName())) {
+        registry.removeBeanDefinition(proxyHolder.getBeanName());
+      }
+      registry.registerBeanDefinition(proxyHolder.getBeanName(), proxyHolder.getBeanDefinition());
+    }
+
+  }
+}
+```
+
+至此Mybatis如何与spring结合讲解完成。
