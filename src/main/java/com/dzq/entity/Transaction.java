@@ -48,4 +48,14 @@ public class Transaction {
     public void setDeployVersion(int deployVersion) {
         this.deployVersion = deployVersion;
     }
+
+    @Override
+    public String toString() {
+        return "Transaction{" +
+                "tenantId=" + tenantId +
+                ", flowKey='" + flowKey + '\'' +
+                ", nodeKey='" + nodeKey + '\'' +
+                ", deployVersion=" + deployVersion +
+                '}';
+    }
 }

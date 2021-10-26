@@ -11,4 +11,8 @@
         insert into transaction(tenant_id,flow_key,node_key,deploy_version)values
         (#{tenantId},#{flowKey},#{nodeKey},#{deployVersion})
     </insert>
+    <select id="selectById" resultType="com.dzq.entity.Transaction">
+        select tenant_id,flow_key,node_key,deploy_version from transaction
+        where id = #{id}
+    </select>
 </mapper>

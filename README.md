@@ -112,7 +112,7 @@
       void setQueryTimeout(int seconds) throws SQLException;
       ```
 
-   2. PreparedStatement：因为已经预设了执行语句，所以执行的时候不需要带sql参数，但是需要对语句通配符？赋值
+   2. PreparedStatement：因为已经预设了执行语句，所以执行的时候不需要带sql语句参数，但是需要对语句占位符赋值
 
       ```java
       // 得到执行结果
@@ -369,7 +369,7 @@ public static void main(String[] args) throws IOException {
 
 ##### 	配置选型
 
-​    mybatis选择的配置模式，使用的xml文件，xml可以很好的使用标签对应类，也可以很好的描述类之间的关系和依赖。
+​    mybatis选择的配置模式是使用的xml文件，xml可以很好的使用标签对应类，也可以很好的描述类之间的关系和依赖。
 
 ##### 	加载
 
@@ -494,33 +494,33 @@ SqlSessionFactory sqlSessionFactory =
    }
    ```
 
-   6.  DataSourceFactory解析
+6. DataSourceFactory解析
 
-      ```java
-      private DataSourceFactory dataSourceElement(XNode context) throws Exception {
-        if (context != null) {
-          String type = context.getStringAttribute("type");
-          // 子标签：<property name="driver" value="com.mysql.jdbc.Driver"/>
-          // 子标签都是属性，所以直接转换为Properties
-          Properties props = context.getChildrenAsProperties();
-          // 根据类型返回从Map对象拿到class文件然后创建
-          DataSourceFactory factory = (DataSourceFactory) resolveClass(type).newInstance();
-          // 像SqlSessionFactory工厂一样，也是需要“零件”，才能生产“产品”
-          // 这里的材料为了适配所有的标签工厂模式，其他比如TransactionFactory，所以用了Properties
-          factory.setProperties(props);
-          return factory;
-        }
-        throw new BuilderException("Environment declaration requires a DataSourceFactory.");
-      }
-      
-      
-      ```
+   ```java
+   private DataSourceFactory dataSourceElement(XNode context) throws Exception {
+     if (context != null) {
+       String type = context.getStringAttribute("type");
+       // 子标签：<property name="driver" value="com.mysql.jdbc.Driver"/>
+       // 子标签都是属性，所以直接转换为Properties
+       Properties props = context.getChildrenAsProperties();
+       // 根据类型返回从Map对象拿到class文件然后创建
+       DataSourceFactory factory = (DataSourceFactory) resolveClass(type).newInstance();
+       // 像SqlSessionFactory工厂一样，也是需要“零件”，才能生产“产品”
+       // 这里的材料为了适配所有的标签工厂模式，其他比如TransactionFactory，所以用了Properties
+       factory.setProperties(props);
+       return factory;
+     }
+     throw new BuilderException("Environment declaration requires a DataSourceFactory.");
+   }
+   
+   
+   ```
 
-    7. 创建DefaultSqlSessionFactory
+ 7. 创建DefaultSqlSessionFactory
 
-       ```java
-       new DefaultSqlSessionFactory(config);// DefaultSqlSessionFactory属性只有一个config
-       ```
+    ```java
+    new DefaultSqlSessionFactory(config);// DefaultSqlSessionFactory属性只有一个config
+    ```
 
 #### 2. 拼接sql
 
@@ -538,7 +538,7 @@ mapperElement(root.evalNode("mappers"));
 public void parse() {
   if (!configuration.isResourceLoaded(resource)) {
     // 解析mapper标签，比较关键
-    // 直接退转到解析标签org.apache.ibatis.builder.xml.XMLStatementBuilder#parseStatementNode,解析的属性非常多但比较简单，只知道位置就可以用到在介绍
+    // 直接退转到解析标签org.apache.ibatis.builder.xml.XMLStatementBuilder#parseStatementNode,解析的属性非常多但比较简单，只知道位置就可以
     // 最终封装在config.mappedStatements中,key：id,value:MappedStatement具体参数可以直接看此类
     configurationElement(parser.evalNode("/mapper"));
     configuration.addLoadedResource(resource);
@@ -885,8 +885,10 @@ private void handleResultSet(ResultSetWrapper rsw, ResultMap resultMap, List<Obj
                 Object rowValue = createResultObject(rsw, resultMap, lazyLoader, null);
                   // createResultObject内方法
                   Object resultObject = createResultObject(rsw, resultMap, constructorArgTypes, constructorArgs, columnPrefix);
-                    // 创建原始类型的结果
+                    // 创建原始类型的结果,判断返回的类型在基本数据类型中
                     return createPrimitiveResultObject(rsw, resultMap, columnPrefix)
+                    //2021-10-25 补充实体类获取resultObject方法，在下一个代码中讲解如何赋值
+                    return objectFactory.create(resultType);// objectFactory的作用创建实例对账，返回后在赋值
                       // 根据resultType得到类型处理类，从rsw中得到，可以进行一个缓存
                       final TypeHandler<?> typeHandler = rsw.getTypeHandler(resultType, columnName);
                       // 对应的类型处理
@@ -908,6 +910,59 @@ private void handleResultSet(ResultSetWrapper rsw, ResultMap resultMap, List<Obj
   }
 }
 ```
+
+**2021-10-25 增加对非原始类进行赋值内容**
+
+```java
+// 得到实例
+Object rowValue = createResultObject(rsw, resultMap, lazyLoader, columnPrefix);
+// 继续创建createResultObject
+// Object resultObject = createResultObject(rsw, resultMap, constructorArgTypes, constructorArgs, columnPrefix);
+// objectFactory.create(resultType);通过objectFactory根据反射创建实例
+// 如果存在非默认构造器
+// createByConstructorSignature(rsw, resultType, constructorArgTypes, constructorArgs);
+// final Constructor<?> defaultConstructor = findDefaultConstructor(constructors);
+// 继续调用createUsingConstructor(rsw, resultType, constructorArgTypes, constructorArgs, defaultConstructor);
+/**
+private Object createUsingConstructor(ResultSetWrapper rsw, Class<?> resultType, List<Class<?>> constructorArgTypes, 			List<Object> constructorArgs, Constructor<?> constructor) throws SQLException {
+    boolean foundValues = false;
+    // 循环参数列表，根据下标获取到rsw中的列名
+    for (int i = 0; i < constructor.getParameterTypes().length; i++) {
+      Class<?> parameterType = constructor.getParameterTypes()[i];
+      String columnName = rsw.getColumnNames().get(i);
+      TypeHandler<?> typeHandler = rsw.getTypeHandler(parameterType, columnName);
+      // 根据列名取值
+      Object value = typeHandler.getResult(rsw.getResultSet(), columnName);
+      constructorArgTypes.add(parameterType);
+      // 放入到构造参数数组中
+      constructorArgs.add(value);
+      foundValues = value != null || foundValues;
+    }
+    return foundValues ? objectFactory.create(resultType, constructorArgTypes, constructorArgs) : null;
+}
+**/
+// 得到实体之后，判断不是基本数据类型，进入判断语句再次赋值
+if (rowValue != null && !hasTypeHandlerForResultObject(rsw, resultMap.getType())) {
+    // 创建元数据对象，
+    final MetaObject metaObject = configuration.newMetaObject(rowValue);
+    // 创建MetaObject
+    /**
+    new MetaObject(object, objectFactory, objectWrapperFactory, reflectorFactory);
+    //不是Array也不是List,所以直接创建BeanWrapper，主要包含这个Class内部get,set方法信息
+    this.objectWrapper = new BeanWrapper(this, object);
+    **/
+    boolean foundValues = this.useConstructorMappings;
+    if (shouldApplyAutomaticMappings(resultMap, false)) {
+        foundValues = applyAutomaticMappings(rsw, resultMap, metaObject, columnPrefix) || foundValues;
+    }
+    // 对实例赋值
+    foundValues = applyPropertyMappings(rsw, resultMap, metaObject, lazyLoader, columnPrefix) || foundValues;
+    foundValues = lazyLoader.size() > 0 || foundValues;
+    rowValue = foundValues || configuration.isReturnInstanceForEmptyRow() ? rowValue : null;
+}
+```
+
+
 
 ![序列图](https://raw.githubusercontent.com/dzhiqiang/PicGo-gallery/main/%E6%89%A7%E8%A1%8Csql%E8%BF%87%E7%A8%8B-%E5%BA%8F%E5%88%97.png)
 
@@ -1428,7 +1483,7 @@ private void processBeanDefinitions(Set<BeanDefinitionHolder> beanDefinitions) {
 
     // MapperFactoryBean构造函数唯一的参数就是Mapper本身
     definition.getConstructorArgumentValues().addGenericArgumentValue(beanClassName);
-    // BeanClass替换成mapperFactoryBeanClass：MapperFactoryBean,
+    // BeanClass替换成mapperFactoryBeanClass：MapperFactoryBean
     definition.setBeanClass(this.mapperFactoryBeanClass);
 
     definition.getPropertyValues().add("addToConfig", this.addToConfig);
@@ -1463,7 +1518,7 @@ private void processBeanDefinitions(Set<BeanDefinitionHolder> beanDefinitions) {
       definition.getPropertyValues().add("sqlSessionTemplate", this.sqlSessionTemplate);
       explicitFactoryUsed = true;
     }
-	// 通过byType方式赋值属性
+	// 上面的代码把属性值放入到bean定义中，通过byType方式赋值属性
     // public void setSqlSessionFactory(SqlSessionFactory sqlSessionFactory) {
     //   if (this.sqlSessionTemplate == null || sqlSessionFactory != this.sqlSessionTemplate.getSqlSessionFactory()) {
     //     this.sqlSessionTemplate = createSqlSessionTemplate(sqlSessionFactory);
